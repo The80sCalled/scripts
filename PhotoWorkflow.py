@@ -1,3 +1,8 @@
+#
+# Simple photo workflow.  Currently, all it does is take photos and videos from a single incoming folder and
+# move them into other folders named by month taken.
+#
+
 import os
 from PIL import Image
 from PIL.ExifTags import TAGS
