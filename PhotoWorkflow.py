@@ -13,7 +13,8 @@ PILE_FOLDERS = [
     # exiftool can't handle unicode filenames; must use the shortened form
     # See http://u88.n24.queensu.ca/exiftool/forum/index.php?topic=5210.0
     os.path.expanduser("~/Pictures/PhotoSync/Rainier/D3A5~1"),
-    "E:\\DCIM"
+    #os.path.expanduser("~/Videos/From Backup"),
+    "I:\\DCIM"
 ]
 MONITORED_EXTENSIONS = (".jpg")
 INCOMING_FOLDER = os.path.expanduser("~/Pictures/Incoming")
