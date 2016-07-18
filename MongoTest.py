@@ -1,11 +1,12 @@
 import pymongo
+import base
 import unittest
 #from test import testdata
 #import base
 #import sixfeet
 #import datetime
 
-MONGO_HOST = "172.19.131.110"
+MONGO_HOST = "10.62.192.113"
 TIMEOUT_MS = 3000
 
 class MongoDB():
@@ -31,16 +32,23 @@ class MongoDB():
         :return:
         """
 
-        try:
-            ret = collection.insert_many(items, ordered=False)
-        except pymongo.errors.BulkWriteError as e:
-            dupe_indices = set([err['index'] for err in e.details['writeErrors'] if err['code'] == 11000])
-            if e.details['nInserted'] + len(dupe_indices) != len(items) or not ignore_duplicates:
-                raise
+        __batch_size = 500
+        inserted_ids = []
 
-            ret = pymongo.results.InsertManyResult([items[i]['_id'] for i in range(len(items)) if i not in dupe_indices], False)
+        for x in range(0, len(items), __batch_size):
+            items_to_insert = items[x:min(len(items), x + __batch_size)]
+            try:
+                ret = collection.insert_many(items_to_insert, ordered=False)
+                inserted_ids.extend(ret.inserted_ids)
+            except pymongo.errors.BulkWriteError as e:
+                dupe_indices = set([err['index'] for err in e.details['writeErrors'] if err['code'] == 11000])
+                if e.details['nInserted'] + len(dupe_indices) != len(items_to_insert) or not ignore_duplicates:
+                    raise
 
-        return ret
+                inserted_ids.extend([items_to_insert[i]['_id'] for i in range(len(items_to_insert)) if i not in dupe_indices])
+
+        return pymongo.results.InsertManyResult(inserted_ids, False)
+
 
 
 #
@@ -58,8 +66,8 @@ def get_aqi_data_point(mins_offset):
         'temp': random.randrange(-3, 17)
     }
 
-def get_aqi_data(format):
-    dataPts = [get_aqi_data_point(x) for x in range(0, 1440, 5)]
+def get_aqi_data(format, minute_range):
+    dataPts = [get_aqi_data_point(x) for x in minute_range]
 
     # First format is as suggested by Liujun
     if format == 1:
@@ -132,7 +140,7 @@ def get_aqi_data(format):
     else:
         raise Exception("Don't know what format you're talking about")
 
-def get_aqi_record(date, serial, format):
+def get_aqi_record(date, serial, format, minute_range):
     import datetime
 
     return {
@@ -140,13 +148,13 @@ def get_aqi_record(date, serial, format):
         'serial': serial,
         'timestamp': date,
         'location': [42.43843, -121.38239],
-        'data': get_aqi_data(format)
+        'data': get_aqi_data(format, minute_range)
     }
 
 def get_sensor_id(n):
     return "ser{0:06}".format(n + 1)
 
-def get_aqi_records(sensor_count, days_count, format):
+def get_aqi_records(sensor_count, days_count, format, minute_range):
     import datetime
 
     START_DATE = datetime.datetime(2016, 7, 7)
@@ -157,38 +165,73 @@ def get_aqi_records(sensor_count, days_count, format):
         myDate = START_DATE + datetime.timedelta(days=d)
         for n in range(sensor_count):
             ser = get_sensor_id(n)
-            recs.append(get_aqi_record(myDate, ser, format))
+            recs.append(get_aqi_record(myDate, ser, format, minute_range))
 
     return recs
 
 
-if __name__ == '__main__':
-    client = MongoDB.connect()
+#
+#
+#
+DAILY_READING_MINS_RANGE = range(0, 1440, 5)
 
-    print("Connected.")
 
-    SENSOR_COUNT = 10
-    DAYS_COUNT = 10
-    BATCH_SIZE = 500
-    FORMAT_TYPE = 1
+def populate_all_at_once(coll, sensor_count, days_count, format_type):
 
-    db = client.get_database('storeTest')
-    coll = db['sensorData_{0}'.format(FORMAT_TYPE)]
 
-    data = get_aqi_records(SENSOR_COUNT, DAYS_COUNT, FORMAT_TYPE)
+    data = get_aqi_records(sensor_count, days_count, format_type, DAILY_READING_MINS_RANGE)
 
     print("Writing {0} records...".format(len(data)))
 
-    #result = coll.bulk_write([pymongo.UpdateOne({'_id': 'ser000001#2016-07-07T00:00:00'}, {'$set': {'test2': [42.0]}})], ordered=False)
-    result = coll.bulk_write([pymongo.UpdateOne({'_id': 'ser000001#2016-07-07T00:00:00'}, {'$inc': {'test2': [44.0]}})],
-                             ordered=False)
-    print(result.__dict__)
+    result = MongoDB.insert_many(coll, data, ignore_duplicates=True)
 
-    # inserted_count = 0
-    # for x in range(0, len(data), BATCH_SIZE):
-    #     stop = min(len(data), x + BATCH_SIZE)
-    #     result = MongoDB.insert_many(coll, data[x:stop], ignore_duplicates=True)
-    #     inserted_count += len(result.inserted_ids)
-    #
-    # print("Inserted {0} new records".format(inserted_count))
+    print("Inserted {0} new records".format(len(result.inserted_ids)))
 
+def populate_time_sequential(coll, sensor_count, days_count, format_type):
+    # Simulate population of data as it trickles in, sample by sample
+
+    if format_type != 1:
+        raise Exception("This function only supports FORMAT_TYPE=1")
+
+    print("Doing initial population...")
+
+    # Do the initial population with the first piece of data
+    data = get_aqi_records(sensor_count, days_count, format_type, range(0, 1))
+    result = MongoDB.insert_many(coll, data, ignore_duplicates=True)
+
+    print("Done.  Adding more data...")
+
+    for min in DAILY_READING_MINS_RANGE:
+        data = get_aqi_records(sensor_count, days_count, format_type, range(min, min + 1))
+
+        updates = []
+        for dt in data:
+            updates.append(pymongo.UpdateOne(
+                {'_id': dt['_id']},
+                {'$set': {
+                    'data.pm25.' + str(min): dt['data']['pm25'][str(min)],
+                    'data.pm25cnt.' + str(min): dt['data']['pm25cnt'][str(min)],
+                    'data.pm10.' + str(min): dt['data']['pm10'][str(min)],
+                    'data.rhumid.' + str(min): dt['data']['rhumid'][str(min)],
+                    'data.temp.' + str(min): dt['data']['temp'][str(min)]
+                }}))
+
+        result = coll.bulk_write(updates, ordered=False)
+        print(".")
+
+    print("Done.")
+
+
+if __name__ == '__main__':
+    base.InitBare()
+    client = MongoDB.connect()
+    db = client.get_database('storeTest')
+
+    print("Connected.")
+
+    FORMAT_TYPE = 2
+    # coll = db['sensorData_{0}_seq'.format(FORMAT_TYPE)]
+    # populate_time_sequential(coll, 10, 10, FORMAT_TYPE)
+
+    coll = db['sensorData_{0}_bulk'.format(FORMAT_TYPE)]
+    populate_all_at_once(coll, 10, 10, FORMAT_TYPE)

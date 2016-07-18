@@ -1,10 +1,13 @@
 import logging
 import os
-import json
-import codecs
 
 def InitTest():
     return _init_internal("test/config.json")
+
+def InitBare():
+    return _init_with_config({
+        'log_file': ''
+    })
 
 def Init(argv):
     if len(argv) == 1:
@@ -16,23 +19,28 @@ def Init(argv):
 
     return _init_internal(config_path)
 
-
 def _init_internal(config_file):
+    import codecs
+    import json
+    with codecs.open(config_file, 'r', 'utf-8') as configFile:
+        config = json.load(configFile)
+
+    return _init_with_config(config)
+
+def _init_with_config(config):
     """
     Loads the program configuration from the given json file and sets up logging.  Returns the config dictionary.
     """
 
     def expand_config_path(key): config[key] = os.path.expanduser(config[key])
 
-    with codecs.open(config_file, 'r', 'utf-8') as configFile:
-        config = json.load(configFile)
-        config['log_file'] = os.path.expanduser(config['log_file'])
+    config['log_file'] = os.path.expanduser(config['log_file'])
 
-        _init_logger(config['log_file'])
+    _init_logger(config['log_file'])
 
-        logging.info("Loaded config file from %s", config['log_file'])
+    logging.info("Loaded config file from %s", config['log_file'])
 
-        return config
+    return config
 
 
 def _init_logger(logFilePath):
@@ -42,11 +50,12 @@ def _init_logger(logFilePath):
     formatter = logging.Formatter(
         fmt = "%(asctime)s: %(filename)s:%(lineno)d %(levelname)s:%(name)s: %(message)s",
         datefmt = "%Y-%m-%d %H:%M:%S")
-    handlers = [
-        logging.handlers.RotatingFileHandler(logFilePath, encoding = 'utf-8',
-            maxBytes = 1000000, backupCount = 1),
-        logging.StreamHandler()
-    ]
+
+    handlers = [logging.StreamHandler()]
+    if logFilePath is not None and len(logFilePath.strip()) > 0:
+        handlers.append(logging.handlers.RotatingFileHandler(logFilePath, encoding = 'utf-8',
+            maxBytes = 1000000, backupCount = 1))
+
     root_logger = logging.getLogger()
     root_logger.handlers = []   # Default root logger contains a FileHandler that writes with cp1252 codec. Screw that.
 
